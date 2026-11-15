@@ -29,6 +29,14 @@ function readStorage(): Record<string, EntryRow[]> {
 
 let cache: Record<string, EntryRow[]> | null = null
 
+/**
+ * 作废内存缓存：领域服务绕过缓存直接读写 localStorage（如跨模块停用写回）后调用，
+ * 保证紧接着的 listRows/allRows 重新从存储读取，不会拿到写回前的旧行。
+ */
+export function invalidateCache(): void {
+  cache = null
+}
+
 export function allRows(): Record<string, EntryRow[]> {
   if (cache === null) {
     cache = readStorage()

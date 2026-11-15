@@ -1,5 +1,7 @@
 import { MODULE_BY_KEY } from '@/data/modules'
 import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
+import { ensureQualityRow, resetQualityDomain } from '@/data/quality-domain'
+import { applyQualityAction } from './quality-service'
 import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
@@ -24,7 +26,13 @@ export function filterRows(rows: EntryRow[], filters: Record<string, string>): E
 }
 
 export function listEntries(key: string, filters: Record<string, string> = {}): PageResult {
-  const matched = filterRows(listRows(key), filters)
+  const raw = listRows(key)
+  // 领域字段在读取时幂等补齐：老 localStorage 数据不带停用时间/版本/告警字段也能正常渲染。
+  const rows =
+    key === 'quality'
+      ? raw.map((row) => ensureQualityRow(row))
+      : raw
+  const matched = filterRows(rows, filters)
   return { items: matched, total: matched.length, page: 1, size: matched.length }
 }
 
@@ -43,6 +51,19 @@ export function runAction(key: string, id: number, action: string): ActionResult
   if (current === target) {
     return { ok: false, message: `${meta.entity}已经是「${target}」，不用重复操作` }
   }
+  // 状态只能按模块登记的顺序正向推进（草稿→…→终态），禁止倒序恢复。
+  const fromIndex = meta.statuses.indexOf(current)
+  const toIndex = meta.statuses.indexOf(target)
+  if (fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex) {
+    return {
+      ok: false,
+      message: `${meta.entity}状态只能按「${meta.statuses.join('→')}」单向推进，「${current}」不能倒序回退到「${target}」`,
+    }
+  }
+  // 质量指标走领域服务：停用要联动批次关闭与跨模块索引状态写回，不能只改一个状态字段。
+  if (key === 'quality') {
+    return applyQualityAction(id, action, ensureQualityRow(rows[index]))
+  }
   const lastStatus = meta.statuses[meta.statuses.length - 1]
   const updated: EntryRow = {
     ...rows[index],
@@ -58,6 +79,10 @@ export function runAction(key: string, id: number, action: string): ActionResult
 
 export function resetModule(key: string): PageResult {
   resetRows(key)
+  // 重置质量监控时，批次与停用结论等领域数据一并回到示例状态，避免残留旧告警。
+  if (key === 'quality') {
+    resetQualityDomain()
+  }
   return listEntries(key)
 }
 
